@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>Chess AI - Pilih Sisi</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <style>
+        body { 
+            background: #0a0a0a; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            height: 100vh; 
+            margin: 0; 
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        /* Menu Overlay */
+        #menu-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); z-index: 200;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+        .menu-card {
+            background: #1a1a1a; padding: 40px; border-radius: 15px;
+            text-align: center; border: 1px solid #333; box-shadow: 0 0 30px rgba(0,0,0,0.5);
+        }
+        .menu-card h1 { color: #fff; margin-bottom: 30px; }
+        .btn-group { display: flex; gap: 20px; }
+        .mode-btn {
+            padding: 20px 40px; font-size: 24px; cursor: pointer; border: none;
+            border-radius: 8px; transition: 0.3s; font-weight: bold;
+        }
+        .white-btn { background: #dee3e6; color: #000; }
+        .black-btn { background: #444; color: #fff; }
+        .mode-btn:hover { transform: scale(1.05); filter: brightness(1.2); }
+
+        #status { color: #888; margin-bottom: 10px; font-size: 18px; height: 24px; }
+        #board-container { position: relative; }
+        #board { 
+            display: grid; 
+            grid-template-columns: repeat(8, 60px); 
+            grid-template-rows: repeat(8, 60px); 
+            border: 5px solid #1a1a1a; 
+            position: relative; z-index: 1;
+        }
+        .square { width: 60px; height: 60px; display: flex; justify-content: center; align-items: center; font-size: 45px; cursor: pointer; }
+        .white-sq { background: #dee3e6; }
+        .black-sq { background: #8ca2ad; }
+        .selected { background: #f1c40f !important; }
+        .last-move { background: rgba(46, 204, 113, 0.4) !important; }
+        .check { background: #e74c3c !important; }
+        .piece { user-select: none; pointer-events: none; z-index: 3; }
+        .white-p { color: #fff; text-shadow: 1px 1px 2px #000; }
+        .black-p { color: #1a1a1a; }
+        
+        .controls { margin-top: 20px; display: flex; gap: 15px; }
+        button.ctrl { 
+            background: #1a1a1a; border: 1px solid #333; color: #888; 
+            padding: 12px 20px; cursor: pointer; border-radius: 5px; 
+            font-size: 18px; transition: 0.3s;
+        }
+        button.ctrl:hover { background: #333; color: #fff; }
+
+        #promotion-modal { 
+            display: none; position: fixed; z-index: 100; left: 0; top: 0; 
+            width: 100%; height: 100%; background: rgba(0,0,0,0.8); 
+            justify-content: center; align-items: center; 
+        }
+        .promo-btns { display: flex; gap: 10px; background: #1a1a1a; padding: 20px; border-radius: 10px; }
+        .promo-btn { font-size: 40px; cursor: pointer; color: white; padding: 10px; }
+    </style>
+</head>
+<body>
+
+    <div id="menu-overlay">
+        <div class="menu-card">
+            <h1>Pilih Sisi Anda</h1>
+            <div class="btn-group">
+                <button class="mode-btn white-btn" onclick="startGame('w')">PUTIH</button>
+                <button class="mode-btn black-btn" onclick="startGame('b')">HITAM</button>
+            </div>
+            <p style="color: #555; margin-top: 20px;">Anda akan bermain melawan Stockfish AI</p>
+        </div>
+    </div>
+
+    <div id="status">Pilih sisi untuk memulai</div>
+
+    <div id="board-container">
+        <div id="board"></div>
+    </div>
+
+    <div class="controls">
+        <button class="ctrl" onclick="location.reload()">🔄 Reset</button>
+        <button class="ctrl" onclick="undoMove()">↩ Undo</button>
+        <button class="ctrl" onclick="toggleFlip()">↕ Putar</button>
+    </div>
+
+    <div id="promotion-modal">
+        <div class="promo-btns">
+            <div class="promo-btn" onclick="selectPromotion('q')">♛</div>
+            <div class="promo-btn" onclick="selectPromotion('r')">♜</div>
+            <div class="promo-btn" onclick="selectPromotion('b')">♝</div>
+            <div class="promo-btn" onclick="selectPromotion('n')">♞</div>
+        </div>
+    </div>
+
+    <script>
+        const game = new Chess();
+        const boardEl = document.getElementById('board');
+        const statusEl = document.getElementById('status');
+        const promoModal = document.getElementById('promotion-modal');
+        
+        let userColor = 'w'; 
+        let isAiThinking = false;
+        let isFlipped = false;
+        let selectedSq = null;
+        let pendingMove = null;
+
+        const pieceUnicode = { 'p': '♟', 'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚' };
+
+        function startGame(side) {
+            userColor = side;
+            document.getElementById('menu-overlay').style.display = 'none';
+            isFlipped = (side === 'b'); 
+            renderBoard();
+            updateGameStatus();
+        }
+
+        async function makeAiMove() {
+            if (game.game_over() || game.turn() === userColor) return;
+            
+            isAiThinking = true;
+            statusEl.textContent = "AI sedang berpikir (Stockfish)...";
+            
+            const fen = encodeURIComponent(game.fen());
+            let bestMoveUci = null;
+
+            try {
+                // Langsung konek ke Stockfish API
+                const res = await fetch(`https://stockfish.online/api/s/v2.php?fen=${fen}&depth=12`);
+                const data = await res.json();
+                if (data.success) {
+                    bestMoveUci = data.bestmove.split(' ')[1];
+                }
+            } catch (e) {
+                console.error("Stockfish Error:", e);
+            }
+
+            // Emergency Fallback (Hanya jika API gagal total)
+            if (!bestMoveUci) {
+                const moves = game.moves();
+                if (moves.length > 0) {
+                    game.move(moves[Math.floor(Math.random() * moves.length)]);
+                }
+            } else {
+                const from = bestMoveUci.substring(0, 2);
+                const to = bestMoveUci.substring(2, 4);
+                const promotion = bestMoveUci.length > 4 ? bestMoveUci[4] : 'q';
+                game.move({ from, to, promotion });
+            }
+
+            isAiThinking = false;
+            renderBoard();
+            updateGameStatus();
+        }
+
+        function updateGameStatus() {
+            if (game.in_checkmate()) {
+                statusEl.textContent = "Skakmat! " + (game.turn() === 'w' ? "Hitam Menang" : "Putih Menang");
+            } else if (game.in_draw()) {
+                statusEl.textContent = "Game Remis!";
+            } else {
+                if (game.turn() === userColor) {
+                    statusEl.textContent = "Giliran Anda (" + (userColor === 'w' ? "Putih" : "Hitam") + ")";
+                } else {
+                    makeAiMove();
+                }
+            }
+        }
+
+        function renderBoard() {
+            boardEl.innerHTML = '';
+            const history = game.history({verbose: true});
+            const lastMove = history.length > 0 ? history[history.length - 1] : null;
+            
+            // Logika urutan kotak berdasarkan isFlipped
+            let squares = [];
+            for (let i = 0; i < 64; i++) squares.push(i);
+            if (isFlipped) squares.reverse();
+
+            squares.forEach(i => {
+                const row = Math.floor(i / 8);
+                const col = i % 8;
+                const sqName = String.fromCharCode(97 + col) + (8 - row);
+                const p = game.get(sqName);
+                
+                const sq = document.createElement('div');
+                sq.className = `square ${(row + col) % 2 === 0 ? 'white-sq' : 'black-sq'}`;
+                
+                if (selectedSq === sqName) sq.classList.add('selected');
+                if (lastMove && (sqName === lastMove.from || sqName === lastMove.to)) sq.classList.add('last-move');
+                if (game.in_check() && p?.type === 'k' && p?.color === game.turn()) sq.classList.add('check');
+
+                if (p) {
+                    const pDiv = document.createElement('div');
+                    pDiv.className = `piece ${p.color === 'w' ? 'white-p' : 'black-p'}`;
+                    pDiv.textContent = pieceUnicode[p.type];
+                    sq.appendChild(pDiv);
+                }
+                
+                sq.onclick = () => handleMove(sqName);
+                boardEl.appendChild(sq);
+            });
+        }
+
+        function handleMove(sqName) {
+            if (game.game_over() || game.turn() !== userColor || isAiThinking) return;
+
+            if (selectedSq === null) {
+                if (game.get(sqName)?.color === userColor) {
+                    selectedSq = sqName;
+                    renderBoard();
+                }
+            } else {
+                const moves = game.moves({ square: selectedSq, verbose: true });
+                const isPromo = moves.some(m => m.to === sqName && m.flags.includes('p'));
+
+                if (isPromo) {
+                    pendingMove = { from: selectedSq, to: sqName };
+                    promoModal.style.display = 'flex';
+                } else {
+                    const move = game.move({ from: selectedSq, to: sqName, promotion: 'q' });
+                    if (move) {
+                        selectedSq = null;
+                        renderBoard();
+                        updateGameStatus();
+                    } else {
+                        selectedSq = (game.get(sqName)?.color === userColor) ? sqName : null;
+                        renderBoard();
+                    }
+                }
+            }
+        }
+
+        function selectPromotion(type) {
+            promoModal.style.display = 'none';
+            if (pendingMove) {
+                game.move({ from: pendingMove.from, to: pendingMove.to, promotion: type });
+                pendingMove = null;
+                selectedSq = null;
+                renderBoard();
+                updateGameStatus();
+            }
+        }
+
+        function undoMove() {
+            if (isAiThinking) return;
+            game.undo(); // Undo AI
+            game.undo(); // Undo User
+            selectedSq = null;
+            renderBoard();
+            updateGameStatus();
+        }
+
+        function toggleFlip() {
+            isFlipped = !isFlipped;
+            renderBoard();
+        }
+    </script>
+</body>
+</html>
